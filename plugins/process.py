@@ -15,9 +15,13 @@ import pcbnew
 # Application definitions.
 from .config import *
 
+import traceback
+import logging    # first of all import the module
 
 class ProcessManager:
     def __init__(self):
+        logging.basicConfig(filename=os.path.join(os.path.dirname(__file__), 'std.log'), filemode='w', format='%(levelname)s - %(message)s')
+        logging.warning('Start logging')
         self.board = pcbnew.GetBoard()
         self.bom = []
         self.components = []
@@ -28,6 +32,7 @@ class ProcessManager:
         '''Read the rotations.cf config file so we know what rotations
         to apply later.
         '''
+        logging.warning('__read_rotation_db gives:')
         db = {}
 
         with open(filename, 'r') as fh:
@@ -44,6 +49,7 @@ class ProcessManager:
                 if match:
                     db.update({ match.group(1): int(match.group(2)) })
 
+        logging.warning(db)
         return db
 
     def _get_rotation_from_db(self, footprint: str) -> float:
@@ -51,7 +57,7 @@ class ProcessManager:
         # Look for regular expression math of the footprint name and not its root library.
         fpshort = footprint.split(':')[-1]
 
-        for expression, delta in self.db.items():
+        for expression, delta in self.__rotation_db.items():
             fp = fpshort
 
             if (re.search(':', expression)):
@@ -166,8 +172,19 @@ class ProcessManager:
                 rotation = footprint.GetOrientation().AsDegrees() if hasattr(footprint.GetOrientation(), 'AsDegrees') else footprint.GetOrientation() / 10.0
                 # Get the rotation offset to be added to the actual rotation prioritizing the explicated by the
                 # designer at the standards symbol fields. If not specified use the internal database.
-                rotation_offset = self._get_rotation_offset_from_footprint(footprint) #or self._get_rotation_from_db(footprint)
-                rotation = (rotation + rotation_offset) % 360.0
+                try:
+                    rotation_offset_db = self._get_rotation_from_db(footprint_name)
+                    logging.warning('rotation offset for ' + footprint.GetReference() + ' (footprint_name: ' + footprint_name + ')')
+                    logging.warning('    rotation from footprint: ' + str(rotation))
+                    logging.warning('    from rotations.cf: ' + str(rotation_offset_db))
+                    rotation_offset = self._get_rotation_offset_from_footprint(footprint) #or self._get_rotation_from_db(footprint)
+                    logging.warning('    from property: ' + str(rotation_offset))
+                except Exception as error:
+                    logging.error(error)
+                    logging.error(traceback.format_exc())
+                    raise
+
+                rotation = (rotation + rotation_offset + rotation_offset_db) % 360.0
 
                 # position offset needs to take rotation into account
                 pos_offset = self._get_position_offset_from_footprint(footprint)
@@ -176,6 +193,8 @@ class ProcessManager:
                 pos_offset = ( pos_offset[0] * rcos - pos_offset[1] * rsin, pos_offset[0] * rsin + pos_offset[1] * rcos )
                 mid_x, mid_y = tuple(map(sum,zip((mid_x, mid_y), pos_offset)))
 
+                logging.warning('')
+                
                 self.components.append({
                     'Designator': designator,
                     'Mid X': mid_x,
@@ -273,6 +292,7 @@ class ProcessManager:
         for key in keys + fallback_keys:
             if footprint.HasProperty(key):
                 offset = footprint.GetProperty(key)
+                logging.warning('    found rotation offset in property of ' + footprint.GetReference() + '! using:' + offset)
                 break
 
         if offset is None or offset == "":
@@ -292,6 +312,7 @@ class ProcessManager:
         for key in keys + fallback_keys:
             if footprint.HasProperty(key):
                 offset = footprint.GetProperty(key)
+                logging.warning('    found position offset in property of ' + footprint.GetReference() + '! using:' + offset)
                 break
 
         if offset is None or offset == "":
